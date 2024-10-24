@@ -20,7 +20,7 @@ class Task(BaseModel):
             datetime.strptime(v, '%d/%m/%y')
             return v  # Devolver la cadena original
         except ValueError:
-            raise ParameterNotValid(status_code=400, detail='La fecha debe estar en formato DD/MM/YY')
+            raise ParameterNotValid(param='fecha_limite')
 class TaskEdit(BaseModel):
     """Modelo de datos para editar una tarea.
 
