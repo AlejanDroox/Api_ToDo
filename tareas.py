@@ -1,71 +1,91 @@
-
-from fastapi import HTTPException
-from typing import Optional, Any, Dict
-from datetime import datetime
-from errors import TaskNotFoundError, TaskInvalidFieldError
+import sqlite3
+from contextlib import contextmanager
+from typing import Dict, List, Optional
 from models import Task
-tasks = {
-    0 : {
-        'titulo': 'presentar el proyecto',
-        'descripcion': 'Un padre nuestro y pa lante',
-        'fecha_limite': '25/10/24',
-        'prioridad': '5',
-        'estado': 1
-    },
-    1 : {
-        'titulo': 'str',
-        'descripcion': 'str',
-        'fecha_limite': 'DD/MM/YY',
-        'prioridad': 2,
-        'estado': 0
-    }
-}
+from errors import TaskNotFoundError, TaskInvalidFieldError
 
-def create(task:Task):
-    new = task.dict(exclude_unset=True)
-    # asigna el id mas baja disponible
-    id = next(i for i in range(len(tasks) + 1) if i not in tasks)
-    tasks[id] = new
-    return new
-def edit_task(task_id: int,task=tasks ,**kwargs: Dict[str, Any]) -> Optional[str]:
-    # Verificar si la tarea existe
-    if task_id not in tasks:
-        mensaje = f"La tarea con ID {task_id} no se encontró."
-        raise TaskNotFoundError(mensaje)
-    
+DATABASE_NAME = "todo.db"
 
-    new_date = {}
-    # Iterar sobre los campos que se desean modificar
-    for field, new_value in kwargs.items():
-        # Verificar si el campo es válido
-        if field in tasks[task_id]:
-            # Actualizar el campo de la tarea
-            tasks[task_id][field] = new_value
-        else:
-            raise TaskInvalidFieldError(field)
-    
-    return task[task_id]
+@contextmanager
+def get_db_connection():
+    conn = sqlite3.connect(DATABASE_NAME)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-def get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
-    # Verificar si la tarea existe
-    if task_id in tasks:
-        return tasks[task_id]
-    mensaje = f"La tarea con ID {task_id} no se encontró."
-    raise TaskNotFoundError(mensaje)
-def task_by_state(estado_buscado:int):
-    tareas_filtradas = {}
-    for id_tarea, info in tasks.items():
-        print(id_tarea, info)
-        print(estado_buscado)
-        if info['estado'] == estado_buscado:
-            tareas_filtradas[id_tarea] = info
-            print(tareas_filtradas)
-    return tareas_filtradas
-def task_delete(id_task:int):
-    dell_task = get_task_by_id(id_task)
-    del tasks[id_task]
-    return dell_task
-if __name__ == '__main__':
-    create(title='hola')
-    create(description='tu')
-    print(tasks)
+def init_db():
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titulo TEXT NOT NULL,
+            descripcion TEXT,
+            fecha_limite TEXT,
+            prioridad INTEGER,
+            estado INTEGER
+        )
+        ''')
+        conn.commit()
+
+def dict_factory(cursor, row):
+    fields = [column[0] for column in cursor.description]
+    return {key: value for key, value in zip(fields, row)}
+
+def execute_query(query: str, params: tuple = (), fetch_one: bool = False) -> Optional[Dict]:
+    with get_db_connection() as conn:
+        conn.row_factory = dict_factory
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        if fetch_one:
+            return cursor.fetchone()
+        return cursor.fetchall()
+
+def execute_action(query: str, params: tuple = ()) -> int:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        conn.commit()
+        return cursor.lastrowid
+
+def create(task: Task) -> Dict:
+    query = '''
+    INSERT INTO tasks (titulo, descripcion, fecha_limite, prioridad, estado)
+    VALUES (?, ?, ?, ?, ?)
+    '''
+    task_dict = task.dict(exclude_unset=True)
+    task_id = execute_action(query, tuple(task_dict.values()))
+    return get_task_by_id(task_id)
+
+def get_all_tasks() -> List[Dict]:
+    return execute_query("SELECT * FROM tasks ORDER BY estado ASC, prioridad DESC")
+
+def get_task_by_id(task_id: int) -> Optional[Dict]:
+    task = execute_query("SELECT * FROM tasks WHERE id = ?", (task_id,), fetch_one=True)
+    if not task:
+        raise TaskNotFoundError(f"La tarea con ID {task_id} no se encontró.")
+    return task
+
+def edit_task(task_id: int, **kwargs) -> Dict:
+    task = get_task_by_id(task_id)
+    valid_fields = set(task.keys()) - {'id'}
+    invalid_fields = set(kwargs.keys()) - valid_fields
+    if invalid_fields:
+        raise TaskInvalidFieldError(next(iter(invalid_fields)))
+
+    update_fields = ', '.join([f"{key} = ?" for key in kwargs.keys()])
+    query = f'UPDATE tasks SET {update_fields} WHERE id = ?'
+    execute_action(query, tuple(kwargs.values()) + (task_id,))
+    return get_task_by_id(task_id)
+
+def task_by_state(estado_buscado: int) -> List[Dict]:
+    return execute_query("SELECT * FROM tasks WHERE estado = ? ORDER BY prioridad DESC", (estado_buscado,))
+
+def task_delete(id_task: int) -> Dict:
+    task = get_task_by_id(id_task)
+    execute_action("DELETE FROM tasks WHERE id = ?", (id_task,))
+    return task
+
+
+init_db()
